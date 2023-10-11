@@ -8,7 +8,7 @@ import io.mosip.kernel.openid.bridge.api.constants.Constants;
 import io.mosip.kernel.openid.bridge.api.constants.Errors;
 import io.mosip.kernel.openid.bridge.api.exception.ClientException;
 import io.mosip.kernel.openid.bridge.api.exception.ServiceException;
-import io.mosip.kernel.openid.bridge.api.service.LoginService;
+import io.mosip.kernel.authcodeflowproxy.api.service.LoginServiceV2;
 import io.mosip.kernel.openid.bridge.api.utils.JWTUtils;
 import io.mosip.kernel.openid.bridge.dto.AccessTokenResponseDTO;
 import org.apache.commons.codec.binary.Base64;
@@ -53,7 +53,7 @@ public class LoginController {
 	private List<String> allowedUrls;
 
 	@Autowired
-	private LoginService loginService;
+	private LoginServiceV2 loginService;
 	
 	@Autowired
 	private ValidateTokenUtil validateTokenHelper;
@@ -79,6 +79,15 @@ public class LoginController {
 			@PathVariable("redirectURI") String redirectURI,
 			@RequestParam(name = "state", required = false) String stateParam, HttpServletResponse res)
 			throws IOException {
+		login(state, redirectURI, stateParam, null, res);
+	}
+
+	@GetMapping(value = "/login/v2/{redirectURI}")
+	public void login(@CookieValue(name = "state", required = false) String state,
+			@PathVariable("redirectURI") String redirectURI,
+			@RequestParam(name = "state", required = false) String stateParam, 
+			@RequestParam(name = "ui_locales", required = false) String uiLocales, HttpServletResponse res)
+			throws IOException {
 		String stateValue = EmptyCheckUtils.isNullEmpty(state) ? stateParam : state;
 		if (EmptyCheckUtils.isNullEmpty(stateValue)) {
 			throw new ServiceException(Errors.STATE_NULL_EXCEPTION.getErrorCode(),
@@ -96,7 +105,7 @@ public class LoginController {
 					Errors.STATE_NOT_UUID_EXCEPTION.getErrorMessage());
 		}
 		
-		String uri = loginService.login(redirectURI, stateValue);
+		String uri = loginService.loginV2(redirectURI, stateValue, uiLocales);
 		Cookie stateCookie = new Cookie("state", stateValue);
 		setCookieParams(stateCookie,true,true,"/");
 		res.addCookie(stateCookie);
@@ -105,37 +114,40 @@ public class LoginController {
 	}
 
 	@GetMapping(value = "/login-redirect/{redirectURI}")
-	public void loginRedirect(@PathVariable("redirectURI") String redirectURI, @RequestParam("state") String state,
-			@RequestParam(value="session_state",required = false) String sessionState, @RequestParam("code") String code,
-			@CookieValue("state") String stateCookie, HttpServletRequest req, HttpServletResponse res) throws IOException {
-		AccessTokenResponseDTO jwtResponseDTO = loginService.loginRedirect(state, sessionState, code, stateCookie,
-				redirectURI);
-		String accessToken = jwtResponseDTO.getAccessToken();
-		validateTokenHelper.validateToken(accessToken);
-		Cookie cookie = loginService.createCookie(accessToken);
-		res.addCookie(cookie);
-		if(validateIdToken) {
-			String subjectClaimNameProperty = this.environment.getProperty(Constants.TOKEN_SUBJECT_CLAIM_NAME);
-			String authTokenSub =  JWTUtils.getSubClaimValueFromToken
-					(cookie.getValue(), subjectClaimNameProperty);
-			String idTokenProperty  = this.environment.getProperty(IDTOKEN, ID_TOKEN);
-			String idToken = jwtResponseDTO.getIdToken();
-			if(idToken == null) {
-				LOGGER.error("Id token is null.");
-				throw new ClientException(Errors.TOKEN_NOTPRESENT_ERROR.getErrorCode(),
-						Errors.TOKEN_NOTPRESENT_ERROR.getErrorMessage() + ": " + idTokenProperty);
+	public void loginRedirect(@PathVariable("redirectURI") String redirectURI, @RequestParam(value="state", required = false) String state,
+			@RequestParam(value="session_state",required = false) String sessionState, @RequestParam(value="code", required = false) String code, 
+			@RequestParam(value="error", required = false) String error,
+			@CookieValue(value="state", required = false) String stateCookie, HttpServletRequest req, HttpServletResponse res) throws IOException {
+		if(error == null || error.isEmpty()){
+			AccessTokenResponseDTO jwtResponseDTO = loginService.loginRedirect(state, sessionState, code, stateCookie,
+					redirectURI);
+			String accessToken = jwtResponseDTO.getAccessToken();
+			validateTokenHelper.validateToken(accessToken);
+			Cookie cookie = loginService.createCookie(accessToken);
+			res.addCookie(cookie);
+			if(validateIdToken) {
+				String subjectClaimNameProperty = this.environment.getProperty(Constants.TOKEN_SUBJECT_CLAIM_NAME);
+				String authTokenSub =  JWTUtils.getSubClaimValueFromToken
+						(cookie.getValue(), subjectClaimNameProperty);
+				String idTokenProperty  = this.environment.getProperty(IDTOKEN, ID_TOKEN);
+				String idToken = jwtResponseDTO.getIdToken();
+				if(idToken == null) {
+					LOGGER.error("Id token is null.");
+					throw new ClientException(Errors.TOKEN_NOTPRESENT_ERROR.getErrorCode(),
+							Errors.TOKEN_NOTPRESENT_ERROR.getErrorMessage() + ": " + idTokenProperty);
+				}
+				String idTokenSub = JWTUtils.getSubClaimValueFromToken(idToken,
+						subjectClaimNameProperty);
+				if(idTokenSub != null && !idTokenSub.equalsIgnoreCase(authTokenSub)){
+					LOGGER.error("Id token Sub value and auth token sub value are not matching.");
+					throw new ClientException(Errors.INVALID_TOKEN.getErrorCode(),
+							Errors.INVALID_TOKEN.getErrorMessage());
+				}
+				validateTokenHelper.validateToken(idToken);
+				Cookie idTokenCookie = new Cookie(idTokenProperty, idToken);
+				setCookieParams(idTokenCookie,true,true,"/");
+				res.addCookie(idTokenCookie);
 			}
-			String idTokenSub = JWTUtils.getSubClaimValueFromToken(idToken,
-					subjectClaimNameProperty);
-			if(idTokenSub != null && !idTokenSub.equalsIgnoreCase(authTokenSub)){
-				LOGGER.error("Id token Sub value and auth token sub value are not matching.");
-				throw new ClientException(Errors.INVALID_TOKEN.getErrorCode(),
-						Errors.INVALID_TOKEN.getErrorMessage());
-			}
-			validateTokenHelper.validateToken(idToken);
-			Cookie idTokenCookie = new Cookie(idTokenProperty, idToken);
-			setCookieParams(idTokenCookie,true,true,"/");
-			res.addCookie(idTokenCookie);
 		}
 		res.setStatus(302);
 		String redirectUrl = new String(Base64.decodeBase64(redirectURI.getBytes()));
@@ -144,6 +156,10 @@ public class LoginController {
 		if(!matchesAllowedUrls) {
 			LOGGER.error("Url {} was not part of allowed url's",redirectUrl);
 			throw new ServiceException(Errors.ALLOWED_URL_EXCEPTION.getErrorCode(), Errors.ALLOWED_URL_EXCEPTION.getErrorMessage());
+		}
+		// If error exist appending that as a query param along with redirecturi
+		if(error != null && !error.isEmpty()){
+			redirectUrl = redirectUrl+"?error="+error;
 		}
 		res.sendRedirect(redirectUrl);	
 	}
