@@ -58,6 +58,7 @@ import io.mosip.kernel.core.util.DateUtils;
 import io.mosip.kernel.core.util.EmptyCheckUtils;
 import io.mosip.kernel.openid.bridge.model.MosipUserDto;
 import jakarta.annotation.PostConstruct;
+import reactor.core.publisher.Mono;
 
 @Component
 public class ValidateTokenHelper {
@@ -365,9 +366,15 @@ public class ValidateTokenHelper {
 		HttpHeaders headers = new HttpHeaders();
 		headers.add(AuthAdapterConstant.AUTH_REQUEST_COOOKIE_HEADER, AuthAdapterConstant.BEARER_STR + jwtToken);
 		String userInfoPath = getUserInfoPath(decodedJWT);
-		ClientResponse response = webClient.method(HttpMethod.GET).uri(userInfoPath).headers(httpHeaders -> {
-			httpHeaders.addAll(headers);
-		}).exchange().block();
+
+		ClientResponse response = webClient.method(HttpMethod.GET)
+				.uri(userInfoPath)
+				.headers(httpHeaders -> {
+					httpHeaders.addAll(headers);
+				})
+				.exchangeToMono(clientResponse -> Mono.just(clientResponse))
+				.block();
+
 		if (response != null && response.statusCode() == HttpStatus.OK) {
 			ObjectNode responseBody = response.bodyToMono(ObjectNode.class).block();
 			if (responseBody != null) {
@@ -382,14 +389,16 @@ public class ValidateTokenHelper {
 			// validating audience | azp claims.
 			boolean matchFound = validateAudience(decodedJWT);
 			if (!matchFound) {
-				LOGGER.error("Provided Client Id does not match with Aud/AZP. Throwing Authorizaion Exception");
+				LOGGER.error("Provided Client Id does not match with Aud/AZP. Throwing Authorization Exception");
 				return ImmutablePair.of(HttpStatus.FORBIDDEN, null);
 			}
 			MosipUserDto mosipUserDto = buildMosipUser(decodedJWT, jwtToken);
 			return ImmutablePair.of(HttpStatus.OK, mosipUserDto);
 		}
-		LOGGER.error("user authentication failed for the provided token (WebClient).");
+
+		LOGGER.error("User authentication failed for the provided token (WebClient).");
 		return ImmutablePair.of(HttpStatus.UNAUTHORIZED, null);
 	}
+
 
 }

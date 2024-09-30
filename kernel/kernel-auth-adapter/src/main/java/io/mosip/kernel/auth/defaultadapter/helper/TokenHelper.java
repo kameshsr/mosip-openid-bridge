@@ -34,6 +34,7 @@ import io.mosip.kernel.auth.defaultadapter.constant.AuthAdapterErrorCode;
 import io.mosip.kernel.auth.defaultadapter.exception.AuthRestException;
 import io.mosip.kernel.core.exception.ExceptionUtils;
 import io.mosip.kernel.core.exception.ServiceError;
+import reactor.core.publisher.Mono;
 
 @Component
 public class TokenHelper {
@@ -112,36 +113,47 @@ public class TokenHelper {
 			LOGGER.warn("OIDC Service URL is not available in config file, not requesting for new auth token.");
 			return null;
 		}
-		issuerInternalURI = issuerInternalURI.trim().isEmpty()?issuerURI:issuerInternalURI;
+
+		issuerInternalURI = issuerInternalURI.trim().isEmpty() ? issuerURI : issuerInternalURI;
 		LOGGER.info("Requesting for new Token for the provided OIDC Service(WebClient): {}", issuerInternalURI);
-		MultiValueMap<String, String> valueMap = new LinkedMultiValueMap<String, String>();
+
+		MultiValueMap<String, String> valueMap = new LinkedMultiValueMap<>();
 		valueMap.add(AuthAdapterConstant.GRANT_TYPE, AuthAdapterConstant.CLIENT_CREDENTIALS);
 		valueMap.add(AuthAdapterConstant.CLIENT_ID, clientId);
 		valueMap.add(AuthAdapterConstant.CLIENT_SECRET, clientSecret);
 
 		String realm = getRealmIdFromAppId(appId);
-		if (Objects.isNull(realm))
+		if (Objects.isNull(realm)) {
 			return null;
+		}
+
 		String tokenUrl = new StringBuilder(issuerInternalURI).append(realm).append(tokenPath).toString();
+
 		ClientResponse response = webClient.method(HttpMethod.POST)
-										   .uri(UriComponentsBuilder.fromUriString(tokenUrl).toUriString())
-										   .contentType(MediaType.APPLICATION_FORM_URLENCODED)
-										   .body(BodyInserters.fromFormData(valueMap))
-										   .exchange().block();
-		if (response !=null && response.statusCode() == HttpStatus.OK) {
+				.uri(UriComponentsBuilder.fromUriString(tokenUrl).toUriString())
+				.contentType(MediaType.APPLICATION_FORM_URLENCODED)
+				.body(BodyInserters.fromFormData(valueMap))
+				.exchangeToMono(clientResponse -> Mono.just(clientResponse))
+				.block();
+
+		if (response != null && response.statusCode() == HttpStatus.OK) {
 			ObjectNode responseBody = response.bodyToMono(ObjectNode.class).block();
 			String accessToken = null;
-			if(responseBody!=null)
-				accessToken = responseBody.get(AuthAdapterConstant.ACCESS_TOKEN).asText();			
+			if (responseBody != null) {
+				accessToken = responseBody.get(AuthAdapterConstant.ACCESS_TOKEN).asText();
+			}
+
 			if (Objects.nonNull(accessToken)) {
 				LOGGER.info("Found Token in response body and returning the Token(WebClient)");
 				return accessToken;
 			}
-		} 
+		}
 
-		LOGGER.error("Error connecting to OIDC service (WebClient) {} or UNKNOWN Error.", AuthAdapterErrorCode.CANNOT_CONNECT_TO_AUTH_SERVICE.getErrorMessage());
+		LOGGER.error("Error connecting to OIDC service (WebClient) {} or UNKNOWN Error.",
+				AuthAdapterErrorCode.CANNOT_CONNECT_TO_AUTH_SERVICE.getErrorMessage());
 		return null;
 	}
+
 
 	private String getRealmIdFromAppId(String appId) {
 
